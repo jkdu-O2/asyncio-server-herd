@@ -1,0 +1,21 @@
+api_key: "YOUR_API_KEY_HERE"
+ports:
+  Bailey: 10000
+  Bona: 10001
+  Campbell: 10002
+  Clark: 10003
+  Jaquez: 10004
+neighbors:
+  Bailey: ["Bona", "Campbell"]
+  Bona: ["Bailey"]
+  Campbell: ["Bailey", "Bona", "Jaquez"]
+  Clark: ["Jaquez", "Bona"]
+  Jaquez: ["Clark", "Campbell"]
+benchmark:
+  num_clients: 5
+  test_duration: 5
+  timeout: 5
+logging:
+  level: "INFO"
+  filename: "benchmark.log"
+  format: "%(asctime)s - %(levelname)s - %(message)s"
