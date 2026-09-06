@@ -22,12 +22,10 @@ pip install -r requirements.txt
 
 ## Configuration
 1. Obtain a Google Places API key from [Google Cloud Console](https://console.cloud.google.com/).
-2. Set the key as an environment variable or edit `config.yml`:
-   ```yaml
-   api_key: "YOUR_API_KEY_HERE"
-   ```
-   *Do not commit your real API key to version control.*
-3. Ports are pre-assigned (`10000`–`10004`). Change only if necessary.
+2. Edit `config.yml`:
+   - Set your API key in the `api_key` field.
+   - Modify `ports` and `neighbors` if you need to change the server topology (defaults are provided).
+3. Do not commit your real API key to version control.
 
 ## Running the Servers
 ### Linux / macOS
