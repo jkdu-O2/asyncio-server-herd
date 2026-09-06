@@ -1,0 +1,16 @@
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Config with secrets (optional)
+# config.yml
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
