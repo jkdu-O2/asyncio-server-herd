@@ -61,7 +61,7 @@ WHATSAT client1 10 5
 - `benchmark.py` – concurrent client for performance testing.
 - `config.yml` – ports, neighbors, API key placeholder, logging.
 - `REPORT.md` – research report on asyncio suitability.
-- 'report.pdf' – PDF version of the report.
+- `report.pdf` – PDF version of the report.
 - `start_all_servers.bat` – Windows launcher (optional).
 - `Makefile` – convenience commands for Linux/macOS.
 - `requirements.txt` – dependencies.
