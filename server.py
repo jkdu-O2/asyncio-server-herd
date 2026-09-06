@@ -7,14 +7,14 @@ import json
 import re
 import yaml
 
-PORTS = {
+DEFAULT_PORTS = {
     "Bailey": 10000,
     "Bona": 10001,
     "Campbell": 10002,
     "Clark": 10003,
     "Jaquez": 10004,
 }
-NEIGHBORS = {
+DEFAULT_NEIGHBORS = {
     "Bailey": ["Bona", "Campbell"],
     "Bona": ["Bailey"],
     "Campbell": ["Bailey", "Bona", "Jaquez"],
@@ -22,24 +22,29 @@ NEIGHBORS = {
     "Jaquez": ["Clark", "Campbell"],
 }
 
-def load_api_key():
-    """Read API key from config.yml, fallback to placeholder if unavailable."""
+def load_config():
+    """Load ports, neighbors, and API key from config.yml.
+       Fall back to defaults if the file or keys are missing."""
     try:
         with open("config.yml", "r") as f:
             cfg = yaml.safe_load(f)
-            return cfg.get("api_key", "YOUR_API_KEY_HERE")
+        ports = cfg.get("ports", DEFAULT_PORTS)
+        neighbors = cfg.get("neighbors", DEFAULT_NEIGHBORS)
+        api_key = cfg.get("api_key", "YOUR_API_KEY_HERE")
+        return ports, neighbors, api_key
     except Exception:
-        return "YOUR_API_KEY_HERE"
+        return DEFAULT_PORTS, DEFAULT_NEIGHBORS, "YOUR_API_KEY_HERE"
 
 class ApplicationServer:
     def __init__(self, name):
         self.name = name
-        self.port = PORTS[name]
-        self.neighbors = NEIGHBORS.get(name, [])
-        self.all_ports = PORTS
-        self.api_key = load_api_key()
+        self.ports, self.neighbors_cfg, self.api_key = load_config()
+        self.port = self.ports[name]
+        self.neighbors = self.neighbors_cfg.get(name, [])
+        self.all_ports = self.ports
         self.client_records = {}
         self.coord_pattern = re.compile(r'^([+-]\d+\.\d+)([+-]\d+\.\d+)$')
+        self.session = None  # shared aiohttp session
 
         logging.basicConfig(
             level=logging.INFO,
@@ -47,6 +52,16 @@ class ApplicationServer:
             format="%(asctime)s %(levelname)s: %(message)s",
         )
         self.logger = logging.getLogger(self.name)
+
+    async def get_session(self):
+        """Return a persistent aiohttp session, creating it on first use."""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    async def close_session(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
 
     def log(self, msg: str, level=logging.INFO):
         self.logger.log(level, msg)
@@ -59,20 +74,32 @@ class ApplicationServer:
     def collapse_newlines(text: str) -> str:
         return re.sub(r'\n{2,}', '\n', text).rstrip('\n')
 
+    async def send_to_neighbor(self, nb, msg):
+        """Send a message to a single neighbor with a timeout."""
+        try:
+            self.log(f"Connecting to neighbor {nb}")
+            # Use a timeout for connection
+            r, w = await asyncio.wait_for(
+                asyncio.open_connection('localhost', self.all_ports[nb]),
+                timeout=2.0
+            )
+            w.write(msg.encode())
+            await w.drain()
+            w.close()
+            await w.wait_closed()
+            self.log(f"Propagated to {nb}: {msg.strip()}")
+        except Exception as e:
+            self.log(f"Error propagating to {nb}: {e}", level=logging.ERROR)
+
     async def broadcast(self, msg: str, exclude: set):
-        for nb in self.neighbors:
-            if nb in exclude:
-                continue
-            try:
-                self.log(f"Connecting to neighbor {nb}")
-                r, w = await asyncio.open_connection('localhost', self.all_ports[nb])
-                w.write(msg.encode())
-                await w.drain()
-                w.close()
-                await w.wait_closed()
-                self.log(f"Propagated to {nb}: {msg.strip()}")
-            except Exception as e:
-                self.log(f"Error propagating to {nb}: {e}", level=logging.ERROR)
+        """Propagate message concurrently to all neighbors not in exclude."""
+        tasks = [
+            self.send_to_neighbor(nb, msg)
+            for nb in self.neighbors
+            if nb not in exclude
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def handle_AT(self, tokens: list, writer):
         if len(tokens) != 6:
@@ -126,7 +153,8 @@ class ApplicationServer:
             await self.send_error(" ".join(tokens), writer)
             return
 
-        if radius > 50 or limit > 20 or client_id not in self.client_records:
+        # Validate radius and limit properly
+        if radius < 0 or radius > 50 or limit <= 0 or limit > 20 or client_id not in self.client_records:
             await self.send_error(" ".join(tokens), writer)
             return
 
@@ -155,19 +183,19 @@ class ApplicationServer:
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        data["results"] = data.get("results", [])[:limit]
-                        json_str = json.dumps(data, indent=4)
-                        json_str = self.collapse_newlines(json_str)
-                        response = f"{update}\n{json_str}\n\n"
-                        writer.write(response.encode())
-                        await writer.drain()
-                    else:
-                        self.log(f"Google API error: {resp.status}", level=logging.ERROR)
-                        await self.send_error(" ".join(tokens), writer)
+            session = await self.get_session()
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    data["results"] = data.get("results", [])[:limit]
+                    json_str = json.dumps(data, indent=4)
+                    json_str = self.collapse_newlines(json_str)
+                    response = f"{update}\n{json_str}\n\n"
+                    writer.write(response.encode())
+                    await writer.drain()
+                else:
+                    self.log(f"Google API error: {resp.status}", level=logging.ERROR)
+                    await self.send_error(" ".join(tokens), writer)
         except Exception as e:
             self.log(f"WHATSAT exception: {e}", level=logging.ERROR)
             await self.send_error(" ".join(tokens), writer)
@@ -209,14 +237,22 @@ class ApplicationServer:
     async def run(self):
         server = await asyncio.start_server(self.handle_client, 'localhost', self.port)
         self.log(f"Listening on port {self.port}")
-        async with server:
-            await server.serve_forever()
+        try:
+            async with server:
+                await server.serve_forever()
+        finally:
+            await self.close_session()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] not in PORTS:
-        sys.stderr.write(f"Usage: python3 server.py <name>\nValid names: {', '.join(PORTS.keys())}\n")
+    if len(sys.argv) < 2:
+        sys.stderr.write(f"Usage: python3 server.py <name>\n")
         sys.exit(1)
     name = sys.argv[1]
+    # Validate name against loaded ports
+    ports, _, _ = load_config()
+    if name not in ports:
+        sys.stderr.write(f"Invalid server name. Valid names: {', '.join(ports.keys())}\n")
+        sys.exit(1)
     srv = ApplicationServer(name)
     try:
         asyncio.run(srv.run())
